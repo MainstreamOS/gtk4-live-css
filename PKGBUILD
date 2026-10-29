@@ -3,9 +3,9 @@
 
 pkgname=gtk4-live-css
 pkgver=4.24.1
-pkgrel=1
+pkgrel=1.1
 epoch=1
-pkgdesc="GObject-based multi-platform GUI toolkit, with the user gtk.css reloaded live"
+pkgdesc="GTK 4 with live user CSS reloading for Mainstream OS"
 url="https://www.gtk.org/"
 arch=(x86_64)
 license=(LGPL-2.1-or-later)
@@ -84,7 +84,7 @@ b2sums=('824667f399ee085521f149f5ed2bffeb52a72034dc59f25fc88beeefb567a37e70f30ec
         '6bcd839ef82296d864587e0cc7acc0145bdea8e5235af304747cf3c0e564c2757cc67c0373dc044bec83dccfc57dc899546c2fccea96cff2bba22f09978a3814'
         'dd589bd1ad2b13f0e06f6899776a083f20a1aac24d4308d666ffd0d1cff38457b8257b8366f92e767b4233b3d86b6b54fa50339faf84c4801a824986366dce30'
         '4b90eb8d582509b09aab401313d4399cc139ad21b5dd7d45d79860d0764c7494c60714e0794e09823e51d1894ac032a994f27d79d1499abf24ee6f59bdb0c243'
-        '9355709ee47dac1e40d6f3bdb1fe3616a3a423322d49a0ca2688cb18b2e4085c1f11a8b93a14b205dd13495bca4173feadaed41c8fdbab3ba44dd6b14f677d4c')
+        '0916bad3c2a61659d45b5fbe4beb0dfb62d0c3297c28defcd92ee3870c60ffa51f46470ca40ad8c032881a011a541ba9e3ca3e15f5714fd72b8a88725e13951f')
 
 prepare() {
   cd gtk
@@ -119,8 +119,9 @@ _pick() {
 
 package() {
   optdepends=('papers: default print previewer')
-  provides=("gtk4=$epoch:$pkgver" libgtk-4.so)
+  provides=("gtk4=${epoch:-0}:$pkgver-$pkgrel" libgtk-4.so)
   conflicts=(gtk4)
+  replaces=(gtk4)
 
   meson install -C build --no-rebuild --destdir "$pkgdir"
 

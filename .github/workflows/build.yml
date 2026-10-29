@@ -1,124 +1,100 @@
-# Keeps gtk4-live-css up to date with Arch's gtk4 so nobody has to touch it.
-#
-# Once a day: compare Arch's current gtk4 version with the one in the committed PKGBUILD.
-# If it changed, or someone ran this by hand with force, build the package in an Arch
-# container, upload it plus a pacman database to the release tagged `repo` (that release
-# is the [saneaspect] repo machines point at) and commit the new PKGBUILD.
-# If the build fails, usually cuz GTK changed the code the patch touches, nothing gets
-# uploaded. Machines stay on the last good version and GitHub mails about the failure.
-name: build
+name: Track Arch GTK and test live CSS
 
+# This fork maintains and tests the recipe. MainstreamOS/packages builds and
+# signs the shipping package; this workflow never publishes an unsigned repo.
 on:
   schedule:
     - cron: "17 4 * * *"
   workflow_dispatch:
     inputs:
       force:
-        description: build even if Arch's gtk4 version has not changed
+        description: build even if Arch's stable GTK has not changed
         type: boolean
         default: false
+  push:
+    branches: [mainstream]
+    paths:
+      - PKGBUILD
+      - '*-css-live-reload.patch'
+      - '*.py'
+      - '*.sh'
+      - '*.hook'
+      - '*.script'
+      - upstream-version
+      - tests/**
+      - .github/workflows/build.yml
 
 permissions:
   contents: write
 
 concurrency:
-  group: build
+  group: gtk4-live-css-${{ github.ref }}
   cancel-in-progress: false
 
-env:
-  REPO_NAME: saneaspect
-  RELEASE_TAG: repo
-
 jobs:
-  check:
-    runs-on: ubuntu-latest
-    outputs:
-      arch: ${{ steps.v.outputs.arch }}
-      ours: ${{ steps.v.outputs.ours }}
-      build: ${{ steps.v.outputs.build }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: v
-        run: |
-          arch=$(curl -sf https://archlinux.org/packages/extra/x86_64/gtk4/json/ \
-            | python3 -c "import json,sys; d=json.load(sys.stdin); print('%s:%s-%s' % (d['epoch'], d['pkgver'], d['pkgrel']))")
-          eval "$(grep -E '^(epoch|pkgver|pkgrel)=' PKGBUILD)"
-          ours="$epoch:$pkgver-$pkgrel"
-          build=false
-          [ "$arch" != "$ours" ] && build=true
-          [ "${{ inputs.force }}" = "true" ] && build=true
-          echo "Arch has gtk4 $arch, we have $ours, build=$build"
-          { echo "arch=$arch"; echo "ours=$ours"; echo "build=$build"; } >> "$GITHUB_OUTPUT"
-
   build:
-    needs: check
-    if: needs.check.outputs.build == 'true'
     runs-on: ubuntu-latest
     container:
       image: archlinux:base-devel
-    env:
-      GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
     steps:
-      - name: Prepare the container
+      - name: Prepare tools
+        run: pacman -Syu --noconfirm --needed git python sudo xorg-server-xvfb xorg-xauth dbus
+
+      - uses: actions/checkout@v6
+
+      - name: Refresh from Arch stable
+        id: recipe
         run: |
-          pacman -Syu --noconfirm --needed git python github-cli sudo
+          python3 prepare-upstream.py latest
+          changed=false
+          git diff --quiet || changed=true
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+
+      - name: Create build user
+        if: steps.recipe.outputs.changed == 'true' || github.event_name == 'push' || inputs.force
+        run: |
           useradd -m builder
-          echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
-          # skip the -debug package, we only serve one file
-          sed -i 's/^OPTIONS=(\(.*\) debug lto)$/OPTIONS=(\1 !debug lto)/' /etc/makepkg.conf
-          grep -q '!debug' /etc/makepkg.conf
-          sed -i 's|^#PACKAGER=.*|PACKAGER="saneaspect (GitHub Actions)"|' /etc/makepkg.conf
+          printf 'builder ALL=(ALL) NOPASSWD: /usr/bin/pacman\n' > /etc/sudoers.d/builder
+          chmod 440 /etc/sudoers.d/builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          mkdir out
+          chown builder:builder out
+
+      - name: Build Arch-compatible package
+        if: steps.recipe.outputs.changed == 'true' || github.event_name == 'push' || inputs.force
+        run: |
+          runuser -u builder -- env PKGDEST="$GITHUB_WORKSPACE/out" \
+            makepkg -sf --noconfirm
+
+      - name: Test live GTK and libadwaita windows
+        if: steps.recipe.outputs.changed == 'true' || github.event_name == 'push' || inputs.force
+        env:
+          GDK_BACKEND: x11
+          GSK_RENDERER: cairo
+          GTK_A11Y: none
+        run: |
+          pacman -S --needed --noconfirm python-gobject libadwaita
+          runuser -u builder -- dbus-run-session -- xvfb-run -a \
+            python3 tests/live-css.py --library-dir src/build/gtk
+          runuser -u builder -- dbus-run-session -- xvfb-run -a \
+            python3 tests/live-css.py --library-dir src/build/gtk --adwaita
+
+      - uses: actions/upload-artifact@v4
+        if: steps.recipe.outputs.changed == 'true' || github.event_name == 'push' || inputs.force
+        with:
+          name: gtk4-live-css-test-build
+          path: out/gtk4-live-css-*.pkg.tar.zst
+          if-no-files-found: error
+
+      - name: Record tested Arch recipe
+        if: steps.recipe.outputs.changed == 'true'
+        env:
+          TARGET_BRANCH: ${{ github.ref_name }}
+        run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-
-      - uses: actions/checkout@v4
-
-      - name: Fetch Arch's packaging for gtk4 ${{ needs.check.outputs.arch }}
-        run: |
-          v='${{ needs.check.outputs.arch }}'
-          git clone -q --depth 1 --branch "${v/:/-}" \
-            https://gitlab.archlinux.org/archlinux/packaging/packages/gtk4.git arch
-
-      - name: Derive the PKGBUILD
-        run: |
-          python3 derive-pkgbuild.py arch/PKGBUILD > PKGBUILD
-          cp PKGBUILD gtk4-user-css-live-reload.patch arch/
-          mkdir repo
-          chown -R builder: .
-
-      - name: Build
-        working-directory: arch
-        run: sudo -u builder env PKGDEST="$GITHUB_WORKSPACE/repo" makepkg -s --noconfirm
-
-      - name: Make the pacman repository
-        working-directory: repo
-        run: |
-          # github renames release assets that have a colon in them, so drop the epoch's
-          # colon from the filename first and the db, the asset and the url all agree
-          for f in *:*; do mv "$f" "${f//:/.}"; done
-          ls -l
-          repo-add "$REPO_NAME.db.tar.gz" gtk4-live-css-*.pkg.tar.zst
-          # release assets can't be symlinks, so copy the db under both names
-          for f in db files; do rm "$REPO_NAME.$f"; cp "$REPO_NAME.$f.tar.gz" "$REPO_NAME.$f"; done
-          ls -l
-
-      - name: Publish to the release
-        run: |
-          gh release view "$RELEASE_TAG" >/dev/null 2>&1 || gh release create "$RELEASE_TAG" \
-            --title "pacman repository" \
-            --notes "This release is the pacman repo. The README has the pacman.conf lines."
-          gh release upload "$RELEASE_TAG" repo/* --clobber
-          # delete assets the new db doesn't list anymore (the previous package)
-          for a in $(gh release view "$RELEASE_TAG" --json assets -q '.assets[].name'); do
-            [ -e "repo/$a" ] || gh release delete-asset "$RELEASE_TAG" "$a" -y
-          done
-          gh release view "$RELEASE_TAG" --json assets -q '.assets[].name'
-
-      - name: Record the version
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add PKGBUILD
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add PKGBUILD upstream-version *.hook *.script
           git diff --cached --quiet && exit 0
-          git commit -m "gtk4 ${{ needs.check.outputs.arch }}"
-          git push
+          git commit -m "gtk4: track tested Arch stable recipe"
+          git push origin "HEAD:$TARGET_BRANCH"

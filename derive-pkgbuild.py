@@ -11,7 +11,9 @@ Arch's version, build options and dependency lists stay as they are. What change
 Every edit asserts the text it expects, so if Arch reshapes the PKGBUILD this blows up
 instead of quietly building an unpatched or half-renamed package.
 """
-import hashlib, re, sys
+import hashlib
+import re
+import sys
 from pathlib import Path
 
 here = Path(__file__).resolve().parent
@@ -20,33 +22,48 @@ s = Path(sys.argv[1]).read_text()
 
 def once(old, new):
     global s
-    assert s.count(old) == 1, f"expected exactly one match for: {old!r}"
+    if s.count(old) != 1:
+        raise ValueError(f"expected exactly one match for: {old!r}")
     s = s.replace(old, new)
 
 # one package instead of pkgbase + four split packages
 m = re.search(r"^pkgbase=gtk4\npkgname=\(\n(?:  .*\n)+?\)\n", s, re.M)
-assert m, "pkgbase=gtk4 / pkgname=( ... ) block not found"
+if not m:
+    raise ValueError("pkgbase=gtk4 / pkgname=( ... ) block not found")
 s = s[:m.start()] + "pkgname=gtk4-live-css\n" + s[m.end():]
 once('pkgdesc="GObject-based multi-platform GUI toolkit"',
-     'pkgdesc="GObject-based multi-platform GUI toolkit, with the user gtk.css reloaded live"')
+     'pkgdesc="GTK 4 with live user CSS reloading for Mainstream OS"')
+
+# Distinguish the patched package from an unmodified/upstream build, including
+# machines that previously installed saneaspect's package at Arch's pkgrel.
+m = re.search(r"^pkgrel=(\d+)(?:\.(\d+))?$", s, re.M)
+if not m:
+    raise ValueError("numeric pkgrel assignment not found")
+release = f"{m[1]}.{int(m[2] or '0') + 1}"
+s = s[:m.start()] + f"pkgrel={release}" + s[m.end():]
 
 # add the patch to source and b2sums, apply it in prepare()
 m = re.search(r"^source=\(\n(?:  .*\n)+?\)\n", s, re.M)
-assert m, "source=( ... ) block not found"
+if not m:
+    raise ValueError("source=( ... ) block not found")
 s = s[:m.end() - 2] + f"  {patch}\n)\n" + s[m.end():]
 b2 = hashlib.blake2b((here / patch).read_bytes(), digest_size=64).hexdigest()
 m = re.search(r"^b2sums=\((?:'[0-9a-f]+'\s*)+\)", s, re.M)
-assert m, "b2sums=( ... ) block not found"
+if not m:
+    raise ValueError("b2sums=( ... ) block not found")
 s = s[:m.end() - 1] + f"\n        '{b2}')" + s[m.end():]
 once("prepare() {\n  cd gtk\n", f"prepare() {{\n  cd gtk\n  patch -Np1 -i ../{patch}\n")
 
 # package_gtk4() becomes package() and stands in for gtk4
 once("package_gtk4() {\n", "package() {\n")
 once("  provides=(libgtk-4.so)\n",
-     '  provides=("gtk4=$epoch:$pkgver" libgtk-4.so)\n  conflicts=(gtk4)\n')
+     '  provides=("gtk4=${epoch:-0}:$pkgver-$pkgrel" libgtk-4.so)\n'
+     '  conflicts=(gtk4)\n'
+     '  replaces=(gtk4)\n')
 for fn in ("gtk4-demos", "gtk4-docs", "gtk-update-icon-cache"):
     m = re.search(rf"^package_{re.escape(fn)}\(\) \{{\n.*?^\}}\n\n?", s, re.M | re.S)
-    assert m, f"package_{fn}() not found"
+    if not m:
+        raise ValueError(f"package_{fn}() not found")
     s = s[:m.start()] + s[m.end():]
 
 sys.stdout.write(s)

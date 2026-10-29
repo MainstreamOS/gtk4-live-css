@@ -2,5 +2,8 @@ arch/
 src/
 pkg/
 repo/
+gtk/
+__pycache__/
 *.pkg.tar.zst
+*.pkg.tar.zst.sig
 *.log
