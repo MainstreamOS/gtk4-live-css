@@ -42,6 +42,22 @@ if not m:
 release = f"{m[1]}.{int(m[2] or '0') + 1}"
 s = s[:m.start()] + f"pkgrel={release}" + s[m.end():]
 
+# drop unneeded doc tooling from makedepends
+for dep in ("  docbook-xsl\n", "  gi-docgen\n", "  python-docutils\n"):
+    once(dep, "")
+
+# disable docs, man-pages, demos, tests and testsuite to cut build time from 45m to ~6m
+once(
+    "    -D documentation=true\n    -D man-pages=true\n",
+    "    -D documentation=false\n    -D screenshots=false\n    -D man-pages=false\n    -D build-demos=false\n    -D build-testsuite=false\n    -D build-examples=false\n    -D build-tests=false\n",
+)
+
+# tolerate missing files in _pick (since docs and demos are not built)
+once(
+    '  for f; do\n    d="$srcdir/$p/${f#$pkgdir/}"\n',
+    '  for f; do\n    [ -e "$f" ] || continue\n    d="$srcdir/$p/${f#$pkgdir/}"\n',
+)
+
 # add the patch to source and b2sums, apply it in prepare()
 m = re.search(r"^source=\(\n(?:  .*\n)+?\)\n", s, re.M)
 if not m:

@@ -58,15 +58,12 @@ depends=(
   xdg-desktop-portal-gtk
 )
 makedepends=(
-  docbook-xsl
-  gi-docgen
   git
   glib2-devel
   gobject-introspection
   hicolor-icon-theme
   libsysprof-capture
   meson
-  python-docutils
   python-gobject
   sassc
   shaderc
@@ -96,8 +93,13 @@ build() {
     -D broadway-backend=true
     -D cloudproviders=enabled
     -D colord=enabled
-    -D documentation=true
-    -D man-pages=true
+    -D documentation=false
+    -D screenshots=false
+    -D man-pages=false
+    -D build-demos=false
+    -D build-testsuite=false
+    -D build-examples=false
+    -D build-tests=false
     -D sysprof=enabled
     -D tracker=enabled
   )
@@ -110,6 +112,7 @@ build() {
 _pick() {
   local p="$1" f d; shift
   for f; do
+    [ -e "$f" ] || continue
     d="$srcdir/$p/${f#$pkgdir/}"
     mkdir -p "$(dirname "$d")"
     mv "$f" "$d"
